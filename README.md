@@ -72,7 +72,7 @@ Every figure below is the unedited output of running its notebook top to bottom 
 
 The [Synthetic Seismic Modeling course](https://ogbonlab.com/textbooks/synthetic-seismic-modeling) teaches the forward problem in 13 parts: wavelets, reflectivity, the convolutional model, finite differences, elastic AVO, anisotropy, fracture physics, earth models, and a Modeling Lab. The course's closing advisor generates these starter programs; the notebooks here are the curated set with course defaults, plus the flagship field-realistic section built for this repository.
 
-A note on honesty: the sections here are the processed, migrated-image idealization (per-trace 1D convolution in time), with band-limited noise at survey-quality S/N. The finite-difference lab is the exception; it propagates the full acoustic wavefield, diffractions and all. Each notebook says which it is.
+Note: the sections here are the processed, migrated-image idealization (per-trace 1D convolution in time), with band-limited noise at survey-quality S/N. The finite-difference lab is the exception; it propagates the full acoustic wavefield, diffractions and all. Each notebook says which it is.
 
 The through-line of the course, and of every notebook here: use the cheapest engine that carries the physics your question depends on.
 
