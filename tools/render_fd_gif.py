@@ -1,9 +1,12 @@
 # Render assets/fd-lab-wavefield.gif: the ssm_acoustic_fd_lab notebook's
-# arrays, animated as its time loop runs. Same physics, same model, same
-# solver; this script only adds frame capture. Run from the repo root:
-#   python3 tools/render_fd_gif.py
+# own arrays, animated as its time loop runs. Same model, same stencil, same
+# sponge, same source: the notebook's field_shot() runs its own run(), and this
+# script only hands it a list to keep the wavefield in (frame capture is the
+# one addition). Run from the repo root:
+#   python3 tools/render_fd_gif.py          (or give the root: python3 render_fd_gif.py <root>)
 import json
 import os
+import sys
 
 import numpy as np
 import matplotlib
@@ -11,65 +14,57 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation, PillowWriter
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NB = os.path.join(ROOT, 'notebooks', 'ssm_acoustic_fd_lab.ipynb')
 OUT = os.path.join(ROOT, 'assets', 'fd-lab-wavefield.gif')
+EVERY_MS = 14.0     # one frame every 14 ms of the run
 
-# Pull the notebook's own code and cut it just before its time loop, so the
-# model, grid, sponges, and source below are literally the notebook's.
+# The notebook's code, defined but not run (its main() waits for __main__):
+# every function and constant below is the notebook's own.
 nb = json.load(open(NB))
 code = '\n\n'.join(''.join(c['source'])
                    for c in nb['cells'] if c['cell_type'] == 'code')
-head = code[:code.index('for it in range(NT):')]
-ns = {}
-exec(compile(head, NB, 'exec'), ns)
+ns = {'__name__': 'render_fd_gif'}
+exec(compile(code, NB, 'exec'), ns)
 
-N, NT, DT, H = ns['N'], ns['NT'], ns['DT'], ns['H']
-c2, damp, src = ns['c2'], ns['damp'], ns['src']
-v, F_MAX, SX, SZ = ns['v'], ns['F_MAX'], ns['SX'], ns['SZ']
-u0 = np.zeros((N, N)); u1 = np.zeros((N, N))
-record = np.zeros((NT, N))
-
-# dense frames while the wavefield is alive, sparse after, so the GIF
-# spends its time on propagation and still lets the record finish
-capture_at = set(np.linspace(0, int(NT * 0.55), 48).astype(int)) \
-    | set(np.linspace(int(NT * 0.55), NT - 1, 14).astype(int))
 frames = []
-for it in range(NT):
-    lap = (np.roll(u1, 1, 0) + np.roll(u1, -1, 0) +
-           np.roll(u1, 1, 1) + np.roll(u1, -1, 1) - 4 * u1)
-    u2 = 2 * u1 - u0 + c2 * lap
-    u2[SZ, SX] += src(it, F_MAX * 0.6) * DT ** 2 * 1e6
-    u2[0, :] = 0
-    u1 = u1 * damp; u2 = u2 * damp
-    record[it] = u2[2, :]
-    if it in capture_at:
-        frames.append((it, u2.copy(), record.copy()))
-    u0, u1 = u1, u2
+s = ns['field_shot'](ns['WINDOW'], ns['F_PEAK_HZ'], frames, EVERY_MS)
+v, h, dt, nt, N_ABS = s['v'], s['h'], s['dt'], s['nt'], ns['N_ABS']
+every = max(1, int(EVERY_MS * 1e-3 / dt))           # as field_shot counts it
+xk = (s['x0'] + np.arange(v.shape[1]) * h) / 1e3
+zm = np.arange(v.shape[0]) * h
+t_ms = np.arange(nt) * dt * 1000.0
+mute = t_ms[:, None] > 1e6 * np.abs(xk - xk[xk.size // 2])[None, :] / ns['MUTE_MPS'] + ns['MUTE_MS']
+diff = (s['rec'] - s['bg']) * mute * (t_ms[:, None] / 1000.0) ** 2   # as the notebook's figure shows it
+inner = [u[N_ABS:N_ABS + v.shape[0], N_ABS:N_ABS + v.shape[1]] for u in frames]
 
-peak_u = max(np.percentile(np.abs(f[1]), 99.5) for f in frames[8:]) + 1e-12
-peak_r = np.percentile(np.abs(record), 99.0) * 1.2 + 1e-12
+peak_r = np.abs(diff).max() * ns['CLIP'] + 1e-30
+T_REF_MS = 150.0    # the wavefield clip: its peak at 150 ms, falling as one over the square root of time after it
+peak_u = np.abs(inner[int(T_REF_MS / (every * dt * 1000.0))]).max() * 0.6 + 1e-30
 
-fig, ax = plt.subplots(1, 2, figsize=(9.6, 4.3), dpi=80)
-im_v = ax[0].imshow(v, cmap='bone', vmin=v.min() - 0.35 * (v.max() - v.min()))
-im_u = ax[0].imshow(np.zeros((N, N)), cmap='seismic',
-                    vmin=-peak_u, vmax=peak_u, alpha=0.62)
-ax[0].set_title('wavefield snapshot')
-ax[0].set_axis_off()
-im_r = ax[1].imshow(np.zeros((NT, N)), cmap='gray',
-                    vmin=-peak_r, vmax=peak_r, aspect='auto')
-ax[1].set_title('surface record: diffractions live here')
-ax[1].set_axis_off()
+fig, ax = plt.subplots(1, 2, figsize=(10.4, 4.4), dpi=80, gridspec_kw={'width_ratios': [1.2, 1]})
+ax[0].imshow(v / 1e3, cmap='bone', aspect='auto', extent=[xk[0], xk[-1], zm[-1], 0])
+im_u = ax[0].imshow(np.zeros_like(v), cmap='seismic', vmin=-1.0, vmax=1.0, alpha=0.6,
+                    aspect='auto', extent=[xk[0], xk[-1], zm[-1], 0])
+ax[0].set_title('the wavefield in the field earth, clip falling as one over root time', fontsize=10)
+ax[0].set_xlabel('distance (km)'); ax[0].set_ylabel('depth (m)')
+stamp = ax[0].text(0.02, 0.96, '', transform=ax[0].transAxes, fontsize=9, va='top',
+                   bbox=dict(facecolor='white', alpha=0.8, edgecolor='none'))
+im_r = ax[1].imshow(np.zeros_like(diff), cmap='gray_r', vmin=-peak_r, vmax=peak_r, aspect='auto',
+                    extent=[xk[0], xk[-1], t_ms[-1], 0])
+ax[1].set_title('what the structure adds to the record', fontsize=10)
+ax[1].set_xlabel('receiver position (km)'); ax[1].set_ylabel('time (ms), gain t squared')
 plt.tight_layout()
 
 def draw(i):
-    it, u, rec = frames[i]
-    im_u.set_data(u)
-    rec_masked = rec.copy(); rec_masked[it + 1:] = 0.0
-    im_r.set_data(rec_masked)
-    return im_u, im_r
+    it = i * every
+    im_u.set_data(inner[i] / (peak_u * np.sqrt(T_REF_MS / max(t_ms[min(it, nt - 1)], T_REF_MS))))
+    shown = diff.copy(); shown[it + 1:] = 0.0
+    im_r.set_data(shown)
+    stamp.set_text('%.0f ms' % t_ms[min(it, nt - 1)])
+    return im_u, im_r, stamp
 
-anim = FuncAnimation(fig, draw, frames=len(frames), interval=70)
+anim = FuncAnimation(fig, draw, frames=len(inner), interval=70)
 anim.save(OUT, writer=PillowWriter(fps=14))
 
 # palette-optimize in place; identical frames, smaller file
@@ -79,5 +74,4 @@ seq = [f.convert('P', palette=Image.ADAPTIVE, colors=128)
        for f in ImageSequence.Iterator(im)]
 seq[0].save(OUT, save_all=True, append_images=seq[1:],
             duration=im.info.get('duration', 70), loop=0, optimize=True)
-print('wrote', os.path.relpath(OUT, ROOT),
-      '%.1f KB' % (os.path.getsize(OUT) / 1024.0))
+print('wrote', os.path.relpath(OUT, ROOT), '%d frames, %.1f KB' % (len(seq), os.path.getsize(OUT) / 1024.0))
